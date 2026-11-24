@@ -4,8 +4,8 @@ const srv=http.createServer((q,r)=>{const f=path.join(root,decodeURIComponent(q.
 (async()=>{
  const b=await chromium.launch({args:['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--ignore-gpu-blocklist']});
  const p=await b.newPage({viewport:{width:1080,height:1920}});p.on('console',m=>{if(m.type()==='error')console.log('ERR',m.text())});p.on('pageerror',e=>console.log('PAGEERR',e.message));
- await p.goto('http://localhost:8765/scene3d.html');await p.waitForFunction(()=>window.ready,null,{timeout:60000});
- await p.evaluate(async([tm,mo])=>{setData(tm,mo);await document.fonts.load('80px Lz','مشمش');await document.fonts.load('80px Lz','abc')},[JSON.parse(fs.readFileSync(root+'/timing.json','utf8')),JSON.parse(fs.readFileSync(root+'/mouth.json','utf8'))]);
+ await p.goto('http://localhost:8765/'+(process.env.SCENE||"scene3d.html")+'');await p.waitForFunction(()=>window.ready,null,{timeout:60000});
+ await p.evaluate(async([tm,mo])=>{setData(tm,mo);await document.fonts.load('80px Lz','مشمش');await document.fonts.load('80px Lz','abc')},[JSON.parse(fs.readFileSync(root+'/'+(process.env.TIMING||'timing.json'),'utf8')),JSON.parse(fs.readFileSync(root+'/'+(process.env.MOUTH||'mouth.json'),'utf8'))]);
  const grab=async t=>Buffer.from((await p.evaluate(t=>{render(t);return document.getElementById('out').toDataURL('image/jpeg',.93)},t)).split(',')[1],'base64');
  if(process.argv[2]==='preview'){for(const t of process.argv.slice(3).map(Number)){const s=Date.now();fs.writeFileSync(`${root}/p3_${t}.jpg`,await grab(t));console.log(t,Date.now()-s,'ms')}}
  else{const [from,to,outp]=[+process.argv[3],+process.argv[4],process.argv[5]];
