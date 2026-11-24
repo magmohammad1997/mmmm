@@ -262,10 +262,12 @@ def reverb(x, sec=1.6, wet=.18):
 
 if __name__ == "__main__":
     voc, lines = synth_vocal()
+    if os.environ.get("VOCAL"):
+        v, vsr = sf.read(os.environ["VOCAL"]); voc = signal.resample_poly(v, SR // 100, vsr // 100)
     # vocal chain: HPF, presence, compression-ish, double in chorus
     b, a = signal.butter(2, 120 / (SR / 2), "high"); voc = signal.lfilter(b, a, voc)
     # presence boost (~2.5-5 kHz) for intelligibility
-    b2, a2 = signal.butter(2, [2500 / (SR / 2), 5500 / (SR / 2)], "band"); voc = voc + 0.6 * signal.lfilter(b2, a2, voc)
+    b2, a2 = signal.butter(2, [2500 / (SR / 2), 5500 / (SR / 2)], "band"); voc = voc + (0.3 if os.environ.get("VOCAL") else 0.6) * signal.lfilter(b2, a2, voc)
     voc = voc / (np.abs(voc).max() + 1e-9)
     # gentle compression via envelope
     envv = np.sqrt(signal.lfilter([1 - .999], [1, -.999], voc ** 2)) + 1e-4
