@@ -1,6 +1,6 @@
 """Original cartoon song 'Mishmish & the Moon' — full synthesis (vocals via MBROLA+WORLD, instruments in numpy)."""
 import json, subprocess, os, sys
-import numpy as np, soundfile as sf, pyworld as pw
+import numpy as np, soundfile as sf
 from scipy import signal
 sys.path.insert(0, os.path.dirname(__file__))
 from syl import pho, syllabify, isvowel
@@ -54,6 +54,8 @@ CONS_LEN = {"S": .085, "s": .08, "s.": .08, "X": .08, "x": .08, "H": .07, "f": .
             "t": .055, "t.": .055, "k": .06, "q": .06, "b": .05, "d": .05, "d.": .05, "?": .03,
             "R": .045, "l": .05, "m": .06, "n": .055, "j": .045, "w": .05, "Z": .07, "G": .06}
 
+CONS_LEN = {k: v * 1.35 for k, v in CONS_LEN.items()}
+
 def parse_mel(s):
     out = []
     for tok in s.split():
@@ -74,21 +76,21 @@ def build_line(diac, mel, start_beat):
         vi = next(i for i, p in enumerate(sy) if isvowel(p))
         onset, vow, coda = sy[:vi], sy[vi], sy[vi + 1:]
         # onset before the beat
-        ot = t0 - sum(CONS_LEN.get(p, .06) for p in onset)
+        ot = t0 - sum(CONS_LEN.get(p, .08) for p in onset)
         for p in onset:
-            l = CONS_LEN.get(p, .06); segs.append((p, ot, ot + l, m)); ot += l
+            l = CONS_LEN.get(p, .08); segs.append((p, ot, ot + l, m)); ot += l
         # end of this syllable: next syllable's onset start (or note end w/ small release)
         end = t1
         if k + 1 < len(syls) and abs(notes[k + 1][0] - t1) < 1e-6:
             nsy = syls[k + 1]; nvi = next(i for i, p in enumerate(nsy) if isvowel(p))
-            end = t1 - sum(CONS_LEN.get(p, .06) for p in nsy[:nvi])
+            end = t1 - sum(CONS_LEN.get(p, .08) for p in nsy[:nvi])
         else:
             end = t1 - 0.06
-        cl = sum(CONS_LEN.get(p, .06) for p in coda)
+        cl = sum(CONS_LEN.get(p, .08) for p in coda)
         segs.append((vow, t0, max(t0 + .05, end - cl), m))
         ct = max(t0 + .05, end - cl)
         for p in coda:
-            l = CONS_LEN.get(p, .06); segs.append((p, ct, ct + l, m)); ct += l
+            l = CONS_LEN.get(p, .08); segs.append((p, ct, ct + l, m)); ct += l
     return segs, notes, [(n[0], n[1]) for n in notes]
 
 def synth_vocal():
@@ -103,44 +105,26 @@ def synth_vocal():
     allsegs.sort(key=lambda s: s[1])
     out = []; t = 0.0
     for p, t0, t1, m in allsegs:
-        if t0 > t + 1e-4:
+        if t0 > t + 0.004:
             out.append(f"_ {int(round((t0 - t) * 1000))}")
         t0 = max(t0, t)
         dur = max(10, int(round((t1 - t0) * 1000)))
         p = {"R": "r"}.get(p, p)
-        f = m2f(m) / 2.0  # synthesize an octave down, WORLD lifts it later
-        out.append(f"{p} {dur} 0 {f:.1f} 100 {f:.1f}" if isvowel(p) or p in ("l","m","n","r","j","w") else f"{p} {dur}")
+        f = m2f(m - 12)
+        if isvowel(p) or p in ("l", "m", "n", "r", "j", "w"):
+            if isvowel(p) and dur > 300:
+                pts = [(0, f), (35, f)] + [(int(35 + k * 65 / 6), f * (1.012 if k % 2 else .988)) for k in range(1, 6)] + [(100, f)]
+            else:
+                pts = [(0, f), (100, f)]
+            out.append(f"{p} {dur} " + " ".join(f"{a} {b:.1f}" for a, b in pts))
+        else:
+            out.append(f"{p} {dur}")
         t = t0 + dur / 1000
     out.append(f"_ {int((TOTAL + 0.5 - t) * 1000)}")
     open(f"{W}/song.pho", "w").write("\n".join(out) + "\n")
     subprocess.run(["mbrola", "-e", "/usr/share/mbrola/ar1/ar1", f"{W}/song.pho", f"{W}/raw16.wav"], check=True)
     x, sr = sf.read(f"{W}/raw16.wav")
-    x = x.astype(np.float64)
-    # WORLD: exact melody pitch, vibrato, cartoon formant lift
-    fp = 5.0
-    f0, tt = pw.harvest(x, sr, f0_floor=70, f0_ceil=700, frame_period=fp)
-    sp = pw.cheaptrick(x, f0, tt, sr); ap = pw.d4c(x, f0, tt, sr)
-    target = np.zeros_like(f0)
-    nts = sorted(allnotes)
-    for i, (a, b, m) in enumerate(nts):
-        idx = (tt >= a - 0.12) & (tt < b + 0.05)
-        f = m2f(m)
-        local = tt[idx] - a
-        vib = np.where(local > 0.25, 1 + 0.012 * np.sin(2 * np.pi * 5.5 * local) * np.clip((local - .25) * 3, 0, 1), 1)
-        cur = np.full(idx.sum(), f) * vib
-        # portamento from previous note
-        if i and a - nts[i - 1][1] < 0.05:
-            pf = m2f(nts[i - 1][2]); k = np.clip((local + 0.04) / 0.07, 0, 1)
-            cur = (pf ** (1 - k)) * (cur ** k)
-        target[idx] = cur
-    voiced = f0 > 0
-    newf0 = np.where(voiced & (target > 0), target, np.where(voiced, f0 * 2, 0))
-    # formant shift up (cartoon kid/cat voice)
-    alpha = 1.22
-    nb = sp.shape[1]; src = np.arange(nb) / alpha
-    sp2 = np.array([np.interp(src, np.arange(nb), row) for row in sp])
-    y = pw.synthesize(newf0, sp2, ap, sr, fp)
-    y = signal.resample_poly(y, 441, 160)
+    y = signal.resample_poly(x.astype(np.float64), 441, 160)
     return y[: int(TOTAL * SR)], lines
 
 # ---------------- instruments ----------------
@@ -279,18 +263,25 @@ def reverb(x, sec=1.6, wet=.18):
 if __name__ == "__main__":
     voc, lines = synth_vocal()
     # vocal chain: HPF, presence, compression-ish, double in chorus
-    b, a = signal.butter(2, 150 / (SR / 2), "high"); voc = signal.lfilter(b, a, voc)
+    b, a = signal.butter(2, 120 / (SR / 2), "high"); voc = signal.lfilter(b, a, voc)
+    # presence boost (~2.5-5 kHz) for intelligibility
+    b2, a2 = signal.butter(2, [2500 / (SR / 2), 5500 / (SR / 2)], "band"); voc = voc + 0.6 * signal.lfilter(b2, a2, voc)
     voc = voc / (np.abs(voc).max() + 1e-9)
-    voc = np.tanh(voc * 2.2) / np.tanh(2.2)
-    dbl = np.zeros_like(voc); d = int(.018 * SR); dbl[d:] = voc[:-d]
+    # gentle compression via envelope
+    envv = np.sqrt(signal.lfilter([1 - .999], [1, -.999], voc ** 2)) + 1e-4
+    voc = voc * np.clip((.25 / envv) ** .4, .6, 2.5); voc /= np.abs(voc).max()
+    dbl = np.zeros_like(voc); d = int(.022 * SR); dbl[d:] = voc[:-d]
     chmask = np.zeros_like(voc)
     for a0, a1 in ((40 * BEAT, 72 * BEAT), (88 * BEAT, 120 * BEAT)): chmask[int(a0 * SR):int(a1 * SR)] = 1
-    voc = voc + .35 * dbl * chmask
+    voc = voc + .18 * dbl * chmask
     inst = instrumental()[: int(TOTAL * SR)]
     L = int(TOTAL * SR); voc = np.pad(voc, (0, max(0, L - len(voc))))[:L]
-    vl = reverb(voc, 1.4, .25); vr = reverb(np.roll(voc, 200), 1.5, .25)
+    # duck music under the voice
+    ve = np.sqrt(signal.lfilter([1 - .9995], [1, -.9995], voc ** 2)); ve /= ve.max()
+    inst = inst / np.abs(inst).max() * (1 - .45 * np.clip(ve * 3, 0, 1))
+    vl = reverb(voc, 1.0, .08); vr = reverb(np.roll(voc, 150), 1.1, .08)
     il = reverb(inst, 1.2, .12)
-    left = il + vl * .9; right = il + vr * .9
+    left = il * .55 + vl; right = il * .55 + vr
     st = np.stack([left, right], 1)
     st /= np.abs(st).max() / .89
     fade = int(.05 * SR); st[:fade] *= np.linspace(0, 1, fade)[:, None]; st[-int(1.2 * SR):] *= np.linspace(1, 0, int(1.2 * SR))[:, None] ** .5
